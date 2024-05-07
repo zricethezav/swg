@@ -11,9 +11,10 @@ import (
 )
 
 var opts struct {
-	ReplaceInf  int    `short:"m" long:"replace-inf" description:"replaces inf (*/+) with a bounded max" default:"-1"`
-	PatternFile string `short:"f" long:"pattern-file" description:"file containing patterns to search for"`
-	TargetPath  string `short:"d" long:"target-path" description:"path to search for patterns" default:"."`
+	ReplaceInf        int    `short:"m" long:"replace-inf" description:"replaces inf (*/+) with a bounded max" default:"-1"`
+	PatternFile       string `short:"f" long:"pattern-file" description:"file containing patterns to search for"`
+	TargetPath        string `short:"d" long:"target-path" description:"path to search for patterns" default:"."`
+	ACCaseInsensitive bool   `short:"i" long:"ignore-case" description:"ignore case when building ahocorasick trei"`
 }
 
 func main() {
@@ -35,7 +36,7 @@ func main() {
 	}
 
 	if opts.PatternFile == "" {
-		m, err = matcher.NewMatcher(args, opts.ReplaceInf)
+		m, err = matcher.NewMatcher(args, opts.ReplaceInf, opts.ACCaseInsensitive)
 	} else {
 		// use pattern file, one pattern per line
 		f, err := os.Open(opts.PatternFile)
@@ -51,7 +52,7 @@ func main() {
 			patterns = append(patterns, scanner.Text())
 		}
 
-		m, err = matcher.NewMatcher(patterns, opts.ReplaceInf)
+		m, err = matcher.NewMatcher(patterns, opts.ReplaceInf, opts.ACCaseInsensitive)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)

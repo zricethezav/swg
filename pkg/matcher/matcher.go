@@ -14,14 +14,18 @@ import (
 	"github.com/rrethy/ahocorasick"
 )
 
+// Couple TODOS up top:
+// TODO - rather than cast to lower, fork the ac library and add case insensitive search
+
 type regexpPlusRadius struct {
 	reg    *regexp.Regexp
 	radius int
 }
 
 type Matcher struct {
-	acFilter      *ahocorasick.Matcher
-	patternLookup map[string][]regexpPlusRadius
+	acFilter        *ahocorasick.Matcher
+	patternLookup   map[string][]regexpPlusRadius
+	caseInsensitive bool
 }
 
 type Match struct {
@@ -32,8 +36,8 @@ type Match struct {
 	FilePath      string
 }
 
-func NewMatcher(res []string, overrideInf int) (*Matcher, error) {
-	fp := &Matcher{patternLookup: make(map[string][]regexpPlusRadius)}
+func NewMatcher(res []string, overrideInf int, caseInsensitive bool) (*Matcher, error) {
+	fp := &Matcher{patternLookup: make(map[string][]regexpPlusRadius), caseInsensitive: caseInsensitive}
 	acWords := make([]string, 0)
 	for _, re := range res {
 		// Extremely dumb way to extract a buffer zone around string literals.
@@ -87,6 +91,9 @@ func NewMatcher(res []string, overrideInf int) (*Matcher, error) {
 
 		// pad radius by 1.5x
 		radius = int(float64(radius) * 1.5)
+		if fp.caseInsensitive {
+			re = "(?i)" + re
+		}
 
 		reP := regexpPlusRadius{
 			reg:    regexp.MustCompile(re),
@@ -97,8 +104,12 @@ func NewMatcher(res []string, overrideInf int) (*Matcher, error) {
 			if len(c) <= 3 {
 				continue
 			}
-			acWords = append(acWords, string(c))
-			fp.patternLookup[string(c)] = append(fp.patternLookup[string(c)], reP)
+			k := string(c)
+			if caseInsensitive {
+				k = strings.ToLower(k)
+			}
+			acWords = append(acWords, k)
+			fp.patternLookup[k] = append(fp.patternLookup[k], reP)
 		}
 	}
 
@@ -107,16 +118,27 @@ func NewMatcher(res []string, overrideInf int) (*Matcher, error) {
 }
 
 func (fp *Matcher) FindMatches(text string, filePath string) []Match {
+	var originalText string
+	if fp.caseInsensitive {
+		originalText = text
+		text = strings.ToLower(text)
+	}
+
 	matchLookup := make(map[string]struct{})
 	matches := make([]Match, 0)
 	for _, match := range fp.acFilter.FindAllString(text) {
-		for _, rp := range fp.patternLookup[string(match.Word)] {
+		// find all regex matches for this word
+		w := string(match.Word)
+		if fp.caseInsensitive {
+			w = strings.ToLower(string(match.Word))
+		}
+		for _, rp := range fp.patternLookup[w] {
 			// TODO revisit this logic
 			if rp.radius == -1 {
 				// do normal regexp match, don't bother with radius
 				for _, m := range rp.reg.FindAllStringIndex(text, -1) {
 					matches = append(matches, Match{
-						MatchedString: text[m[0]:m[1]],
+						MatchedString: originalText[m[0]:m[1]],
 						MatchedRegex:  rp.reg.String(),
 						PosBegin:      m[0],
 						PosEnd:        m[1],
@@ -134,7 +156,9 @@ func (fp *Matcher) FindMatches(text string, filePath string) []Match {
 			if end > len(text) {
 				end = len(text)
 			}
+
 			haystack := text[start:end]
+			originalHaystack := originalText[start:end]
 
 			for _, m := range rp.reg.FindAllStringIndex(haystack, -1) {
 				key := fmt.Sprintf("%d:%d:%s", start+m[0], start+m[1], rp.reg.String())
@@ -143,7 +167,7 @@ func (fp *Matcher) FindMatches(text string, filePath string) []Match {
 				}
 				matchLookup[key] = struct{}{}
 				matches = append(matches, Match{
-					MatchedString: haystack[m[0]:m[1]],
+					MatchedString: originalHaystack[m[0]:m[1]],
 					MatchedRegex:  rp.reg.String(),
 					PosBegin:      start + m[0],
 					PosEnd:        start + m[1],
