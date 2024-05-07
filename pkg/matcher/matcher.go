@@ -92,7 +92,9 @@ func NewMatcher(res []string, overrideInf int, caseInsensitive bool) (*Matcher, 
 		// pad radius by 1.5x
 		radius = int(float64(radius) * 1.5)
 		if fp.caseInsensitive {
-			re = "(?i)" + re
+			if !strings.HasPrefix(re, "(?i)") {
+				re = "(?i)" + re
+			}
 		}
 
 		reP := regexpPlusRadius{
@@ -117,10 +119,11 @@ func NewMatcher(res []string, overrideInf int, caseInsensitive bool) (*Matcher, 
 	return fp, nil
 }
 
+// BRO_SUSPEND
+// bro_suspend
+
 func (fp *Matcher) FindMatches(text string, filePath string) []Match {
-	var originalText string
 	if fp.caseInsensitive {
-		originalText = text
 		text = strings.ToLower(text)
 	}
 
@@ -128,6 +131,7 @@ func (fp *Matcher) FindMatches(text string, filePath string) []Match {
 	matches := make([]Match, 0)
 	for _, match := range fp.acFilter.FindAllString(text) {
 		// find all regex matches for this word
+		match := match
 		w := string(match.Word)
 		if fp.caseInsensitive {
 			w = strings.ToLower(string(match.Word))
@@ -138,7 +142,7 @@ func (fp *Matcher) FindMatches(text string, filePath string) []Match {
 				// do normal regexp match, don't bother with radius
 				for _, m := range rp.reg.FindAllStringIndex(text, -1) {
 					matches = append(matches, Match{
-						MatchedString: originalText[m[0]:m[1]],
+						MatchedString: text[m[0]:m[1]],
 						MatchedRegex:  rp.reg.String(),
 						PosBegin:      m[0],
 						PosEnd:        m[1],
@@ -157,8 +161,8 @@ func (fp *Matcher) FindMatches(text string, filePath string) []Match {
 				end = len(text)
 			}
 
+			// fmt.Println("start:", start, "end:", end, "match:", string(match.Word), "radius:", rp.radius, "len(text):", len(text), "match idx", match.Index)
 			haystack := text[start:end]
-			originalHaystack := originalText[start:end]
 
 			for _, m := range rp.reg.FindAllStringIndex(haystack, -1) {
 				key := fmt.Sprintf("%d:%d:%s", start+m[0], start+m[1], rp.reg.String())
@@ -167,7 +171,7 @@ func (fp *Matcher) FindMatches(text string, filePath string) []Match {
 				}
 				matchLookup[key] = struct{}{}
 				matches = append(matches, Match{
-					MatchedString: originalHaystack[m[0]:m[1]],
+					MatchedString: haystack[m[0]:m[1]],
 					MatchedRegex:  rp.reg.String(),
 					PosBegin:      start + m[0],
 					PosEnd:        start + m[1],
