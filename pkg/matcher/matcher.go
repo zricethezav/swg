@@ -87,7 +87,6 @@ func NewMatcher(res []string, overrideInf int) (*Matcher, error) {
 
 		// pad radius by 1.5x
 		radius = int(float64(radius) * 1.5)
-		fmt.Println("Radius:", radius)
 
 		reP := regexpPlusRadius{
 			reg:    regexp.MustCompile(re),
@@ -95,6 +94,9 @@ func NewMatcher(res []string, overrideInf int) (*Matcher, error) {
 		}
 
 		for _, c := range code.Strings {
+			if len(c) <= 3 {
+				continue
+			}
 			acWords = append(acWords, string(c))
 			fp.patternLookup[string(c)] = append(fp.patternLookup[string(c)], reP)
 		}

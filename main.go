@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 
@@ -37,7 +38,24 @@ func main() {
 		m, err = matcher.NewMatcher(args, opts.ReplaceInf)
 	} else {
 		// use pattern file, one pattern per line
-		m, err = matcher.NewMatcher([]string{os.Args[1]}, opts.ReplaceInf)
+		f, err := os.Open(opts.PatternFile)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer f.Close()
+
+		patterns := []string{}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			patterns = append(patterns, scanner.Text())
+		}
+
+		m, err = matcher.NewMatcher(patterns, opts.ReplaceInf)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
 	}
 
 	if err != nil {
