@@ -4,18 +4,35 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/charlievieth/fastwalk"
+	"github.com/h2non/filetype"
 
 	"github.com/dlclark/regexp2/syntax"
 	"github.com/rrethy/ahocorasick"
 )
 
-// Couple TODOS up top:
-// TODO - rather than cast to lower, fork the ac library and add case insensitive search
+const (
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorPurple = "\033[35m"
+)
+
+var ignorePattern = regexp.MustCompile(`(.*?)(jpg|gif|doc|docx|zip|xls|pdf|bin|svg|socket|vsidx|v2|suo|wsuo|\.dll|pdb|exe)$`)
+
+func shouldIgnore(path string) bool {
+	if ignorePattern.MatchString(path) {
+		fmt.Println("Ignoring file:", path)
+		return true
+	}
+	return false
+}
 
 type regexpPlusRadius struct {
 	reg    *regexp.Regexp
@@ -34,6 +51,8 @@ type Match struct {
 	PosBegin      int
 	PosEnd        int
 	FilePath      string
+	LineNumber    int
+	LineContent   string
 }
 
 func NewMatcher(res []string, overrideInf int, caseInsensitive bool) (*Matcher, error) {
@@ -90,7 +109,7 @@ func NewMatcher(res []string, overrideInf int, caseInsensitive bool) (*Matcher, 
 		}
 
 		// pad radius by 1.5x
-		radius = int(float64(radius) * 1.5)
+		// radius = int(float64(radius) * 1.5)
 		if fp.caseInsensitive {
 			if !strings.HasPrefix(re, "(?i)") {
 				re = "(?i)" + re
@@ -123,115 +142,237 @@ func NewMatcher(res []string, overrideInf int, caseInsensitive bool) (*Matcher, 
 // bro_suspend
 
 func (fp *Matcher) FindMatches(text string, filePath string) []Match {
+	transformedText := text
 	if fp.caseInsensitive {
-		text = strings.ToLower(text)
+		transformedText = strings.ToLower(text)
 	}
+
+	lines := strings.Split(text, "\n") // Split the original text into lines
 
 	matchLookup := make(map[string]struct{})
 	matches := make([]Match, 0)
-	for _, match := range fp.acFilter.FindAllString(text) {
-		// find all regex matches for this word
-		match := match
-		w := string(match.Word)
-		if fp.caseInsensitive {
-			w = strings.ToLower(string(match.Word))
-		}
-		for _, rp := range fp.patternLookup[w] {
-			// TODO revisit this logic
-			if rp.radius == -1 {
-				// do normal regexp match, don't bother with radius
-				for _, m := range rp.reg.FindAllStringIndex(text, -1) {
-					matches = append(matches, Match{
-						MatchedString: text[m[0]:m[1]],
-						MatchedRegex:  rp.reg.String(),
-						PosBegin:      m[0],
-						PosEnd:        m[1],
-						FilePath:      filePath,
-					})
-				}
-				continue
-			}
 
+	// patternRegions := make(map[string][][2]int) // Map to store ranges for each pattern
+
+	for _, match := range fp.acFilter.FindAllString(transformedText) {
+		w := string(match.Word)
+		for _, rp := range fp.patternLookup[w] {
+			// Extend start to the previous newline
 			start := match.Index - rp.radius
 			if start < 0 {
 				start = 0
-			}
-			end := match.Index + len(match.Word) + rp.radius
-			if end > len(text) {
-				end = len(text)
+			} else {
+				if idx := strings.LastIndex(transformedText[:start], "\n"); idx != -1 {
+					start = idx + 1 // Move start back to the start of the line
+				}
 			}
 
-			// fmt.Println("start:", start, "end:", end, "match:", string(match.Word), "radius:", rp.radius, "len(text):", len(text), "match idx", match.Index)
-			haystack := text[start:end]
+			// Extend end to the next newline
+			end := match.Index + len(w) + rp.radius
+			if end > len(transformedText) {
+				end = len(transformedText)
+			} else {
+				if idx := strings.Index(transformedText[end:], "\n"); idx != -1 {
+					end += idx // Move end forward to the end of the line
+				} else {
+					end = len(transformedText) // If no newline, go to the end of the text
+				}
+			}
+
+			haystack := transformedText[start:end] // Use transformed text for regex operations
 
 			for _, m := range rp.reg.FindAllStringIndex(haystack, -1) {
-				key := fmt.Sprintf("%d:%d:%s", start+m[0], start+m[1], rp.reg.String())
-				if _, ok := matchLookup[key]; ok {
-					continue
+				originalStart := start + m[0]
+				originalEnd := start + m[1]
+
+				// Check for overlap
+				// overlapFound := false
+				// for _, region := range patternRegions[rp.reg.String()] {
+				// 	if overlapsMoreThan50Percent(region, [2]int{originalStart, originalEnd}) {
+				// 		overlapFound = true
+				// 		break
+				// 	}
+				// }
+
+				// if overlapFound {
+				// 	continue // Skip this match as it overlaps significantly with a previous match
+				// }
+
+				// Store the region for future overlap checks
+				// patternRegions[rp.reg.String()] = append(patternRegions[rp.reg.String()], [2]int{originalStart, originalEnd})
+
+				key := fmt.Sprintf("%d:%d:%s", originalStart, originalEnd, rp.reg.String())
+				if _, ok := matchLookup[key]; !ok {
+					lineNumber, lineContent := findLineAndContent(lines, originalStart)
+					matchLookup[key] = struct{}{}
+					matches = append(matches, Match{
+						MatchedString: text[originalStart:originalEnd],
+						MatchedRegex:  rp.reg.String(),
+						PosBegin:      originalStart,
+						PosEnd:        originalEnd,
+						FilePath:      filePath,
+						LineNumber:    lineNumber,
+						LineContent:   lineContent,
+					})
 				}
-				matchLookup[key] = struct{}{}
-				matches = append(matches, Match{
-					MatchedString: haystack[m[0]:m[1]],
-					MatchedRegex:  rp.reg.String(),
-					PosBegin:      start + m[0],
-					PosEnd:        start + m[1],
-					FilePath:      filePath,
-				})
 			}
 		}
 	}
 	return matches
 }
 
+// Helper function to check if two ranges overlap more than 50%
+func overlapsMoreThan50Percent(region1, region2 [2]int) bool {
+	start := max(region1[0], region2[0])
+	end := min(region1[1], region2[1])
+	if end <= start {
+		return false
+	}
+	overlap := end - start
+	largerRegionLength := max(region1[1]-region1[0], region2[1]-region2[0])
+	return overlap*2 > largerRegionLength // Overlap is more than 50% of the length of the larger region
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// Helper function to find the line number and content for a given index
+func findLineAndContent(lines []string, index int) (int, string) {
+	currentIndex := 0
+	for i, line := range lines {
+		// Update currentIndex to the end of this line (including newline character)
+		nextIndex := currentIndex + len(line) + 1 // +1 for the newline character
+		if index < nextIndex {
+			return i + 1, line // Lines are 1-indexed
+		}
+		currentIndex = nextIndex
+	}
+	return -1, "" // Return -1 if no line is found (should not happen)
+}
+
 func processFile(path string, fp *Matcher, wg *sync.WaitGroup) {
 	defer wg.Done()
-	file, err := os.Open(path)
+	f, err := os.Open(path)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
 		return
 	}
-	defer file.Close()
+	defer f.Close()
 
-	contents, err := io.ReadAll(file)
+	buf := make([]byte, 512)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		return
+	}
+	if n == 0 {
+		return
+	}
+
+	// TODO: optimization could be introduced here
+	mimetype, err := filetype.Match(buf[:n])
+	if err != nil {
+		return
+	}
+	if mimetype.MIME.Type == "application" {
+		return // skip binary files
+	}
+
+	// reset
+	f.Seek(0, 0)
+
+	// Count the number of newlines in this chunk
+	// linesInChunk := strings.Count(string(buf[:n]), "\n")
+	// totalLines += linesInChunk
+
+	contents, err := io.ReadAll(f)
 	if err != nil {
 		fmt.Println("Error reading file:", err)
 		return
 	}
-
 	matches := fp.FindMatches(string(contents), path)
-	for _, m := range matches {
-		fmt.Printf("%s Matched: %s, Regex: %s, Begin: %d, End: %d\n", m.FilePath, m.MatchedString, m.MatchedRegex, m.PosBegin, m.PosEnd)
+	printMatches(matches, path, false)
+}
+
+func printMatches(matches []Match, path string, noColor bool) {
+	if len(matches) > 0 {
+		fmt.Printf("%s%s%s\n", colorPurple, path, colorReset) // Print path in purple
+		for _, m := range matches {
+			lineContent := m.LineContent
+			matchContent := m.MatchedString
+
+			// Use strings.Index to find the match in the line
+			matchIndex := strings.Index(lineContent, matchContent)
+			if matchIndex == -1 || noColor {
+				// Fall back to non-colored output if no match is found or color is disabled
+				fmt.Printf("%s%d%s: %s\n", colorGreen, m.LineNumber, colorReset, lineContent)
+				continue
+			}
+
+			// Print the line with highlighted match
+			fmt.Printf("%s%d%s: %s%s%s%s%s\n",
+				colorGreen, m.LineNumber, colorReset, // Line number in green
+				lineContent[:matchIndex], // Part of the line before the match
+				colorRed,                 // Start color red for the match
+				lineContent[matchIndex:matchIndex+len(matchContent)], // The matched part
+				colorReset, // Reset color after the match
+				lineContent[matchIndex+len(matchContent):], // Part of the line after the match
+			)
+		}
+		fmt.Println()
 	}
 }
 
 func (fp *Matcher) SearchDir(dir string) error {
 	var wg sync.WaitGroup
 
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	conf := fastwalk.Config{
+		Follow: false, // Set to true if you need to follow symlinks
+	}
+
+	walkFn := func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			fmt.Println("Error walking files:", err)
-			return err
+			fmt.Fprintf(os.Stderr, "Error walking file: %s, %v\n", path, err)
+			return nil // Return nil to continue walking the directory
 		}
 
-		// Skip symbolic links
-		if info.Mode()&os.ModeSymlink != 0 {
+		// Check if the path should be ignored
+		if shouldIgnore(path) {
+			return nil
+		}
+
+		// Skip symbolic links unless Follow is true
+		if !conf.Follow && (d.Type()&os.ModeSymlink != 0) {
 			return nil
 		}
 
 		// Skip directories and process only regular files
-		if !info.IsDir() {
+		if !d.IsDir() {
 			wg.Add(1)
-			go processFile(path, fp, &wg)
+			go func() {
+				processFile(path, fp, &wg)
+			}()
 		}
-
 		return nil
-	})
+	}
 
-	if err != nil {
-		fmt.Println("Error walking directory:", err)
+	// Start walking the directory
+	if err := fastwalk.Walk(&conf, dir, walkFn); err != nil {
+		fmt.Fprintf(os.Stderr, "Error walking directory: %s, %v\n", dir, err)
 		return err
 	}
 
+	// Wait for all goroutines to finish
 	wg.Wait()
-	return err
+	return nil
 }
